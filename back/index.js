@@ -1,25 +1,25 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const cors = require('cors');
 const authRouter = require('./authRouter');
-const PORT = process.env.PORT || 3000;
+require('dotenv').config();
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-app.use(cors());
 app.use(express.json());
 app.use('/auth', authRouter);
 
-const start = async () => {
+async function start() {
   try {
-    await mongoose.connect(
-        'mongodb+srv://Pross_libr:FZH10HelCYjeUMqv@cluster0.elvtf.mongodb.net/?retryWrites=true&w=majority',
-        { useNewUrlParser: true, useUnifiedTopology: true }
-      );
-    app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
-  } catch (e) {
-    console.error('Error connecting to database:', e);
+    await mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+    console.log('Подключено к базе данных');
+
+    app.listen(PORT, () => {
+      console.log(`Сервер запущен на порту ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Ошибка подключения к базе данных', err);
   }
-};
+}
 
 start();

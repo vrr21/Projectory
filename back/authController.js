@@ -1,78 +1,63 @@
+const { OAuth2Client } = require('google-auth-library');
 const User = require('./models/User');
-const Role = require('./models/Role');
 const bcrypt = require('bcryptjs');
-const { validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
-const { secret } = require('./config');
 
-const generateAccessToken = (id, roles) => {
-  const payload = {
-    id,
-    roles,
-  };
-  return jwt.sign(payload, secret, { expiresIn: '24h' });
-};
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-class authController {
-  async registration(req, res) {
+class AuthController {
+  // Регистрация пользователя
+  async register(req, res) {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ message: 'Validation error', errors });
+      const { email, password } = req.body;
+
+      // Проверка, существует ли пользователь с таким email
+      const existingUser = await User.findOne({ email });
+      if (existingUser) {
+        return res.status(400).json({ message: 'Email уже существует!' });
       }
 
-      const { username, password } = req.body;
+      // Хеширование пароля и создание нового пользователя
+      const hashedPassword = bcrypt.hashSync(password, 7);
+      const newUser = new User({ email, password: hashedPassword });
+      await newUser.save();
 
-      // Проверяем, существует ли пользователь
-      const candidate = await User.findOne({ username });
-      if (candidate) {
-        return res.status(400).json({ message: 'User already exists' });
-      }
-console.log(req)
-      const hashPassword = bcrypt.hashSync(password, 7);
-      const userRole = await Role.findOne({ value: 'USER' });
-      const user = new User({
-        username,
-        password: hashPassword,
-        roles: [userRole ? userRole.value : 'USER'],
-      });
+      // Генерация токена
+      const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
-      await user.save();
-      return res.status(201).json({ message: 'User successfully registered' });
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ message: 'Registration error' });
+      res.status(201).json({ message: 'Пользователь успешно зарегистрирован!', token });
+    } catch (error) {
+      console.error('Ошибка при регистрации:', error);
+      res.status(500).json({ message: 'Ошибка сервера' });
     }
   }
 
+  // Авторизация пользователя
   async login(req, res) {
     try {
-      const { username, password } = req.body;
-      const user = await User.findOne({ username });
-      if (!user) {
-        return res.status(400).json({ message: `User ${username} not found` });
-      }
-      const validPassword = bcrypt.compareSync(password, user.password);
-      if (!validPassword) {
-        return res.status(400).json({ message: 'Invalid password' });
-      }
-      const token = generateAccessToken(user._id, user.roles);
-      return res.json({ token });
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ message: 'Login error' });
-    }
-  }
+      const { email, password } = req.body;
 
-  async getUsers(req, res) {
-    try {
-      const users = await User.find();
-      res.json(users);
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ message: 'Cannot retrieve users' });
+      // Поиск пользователя по email
+      const user = await User.findOne({ email });
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+
+      // Проверка пароля
+      const isPasswordValid = bcrypt.compareSync(password, user.password);
+      if (!isPasswordValid) {
+        return res.status(400).json({ message: 'Неверный пароль' });
+      }
+
+      // Генерация токена
+      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+      res.json({ token });
+    } catch (error) {
+      console.error('Ошибка при авторизации:', error);
+      res.status(500).json({ message: 'Ошибка сервера' });
     }
   }
 }
 
-module.exports = new authController();
+module.exports = new AuthController();
