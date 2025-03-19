@@ -1,25 +1,34 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const authRouter = require('./authRouter');
-require('dotenv').config();
+const express = require("express");
+const cors = require("cors");
+const { sequelize } = require("./models"); // Импортируем sequelize из models
+const authRouter = require("./authRouter"); // Импортируем маршруты
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
+// Middleware
+app.use(cors({ origin: "http://localhost:3000" })); // Разрешаем запросы с фронтенда
 app.use(express.json());
-app.use('/auth', authRouter);
 
-async function start() {
-  try {
-    await mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
-    console.log('Подключено к базе данных');
+// Подключаем маршруты
+app.use("/api/auth", authRouter);
 
-    app.listen(PORT, () => {
-      console.log(`Сервер запущен на порту ${PORT}`);
-    });
-  } catch (err) {
-    console.error('Ошибка подключения к базе данных', err);
-  }
-}
+// Проверка работы сервера
+app.get("/", (req, res) => {
+  res.send("🚀 Сервер работает!");
+});
 
-start();
+// Логирование всех запросов для отладки
+app.use((req, res, next) => {
+  console.log(`Получен запрос: ${req.method} ${req.url}`);
+  next();
+});
+
+// Синхронизация с базой данных
+sequelize
+  .sync({ force: false }) // force: false, чтобы не пересоздавать таблицы
+  .then(() => console.log("✅ База данных синхронизирована"))
+  .catch((err) => console.error("❌ Ошибка синхронизации базы данных:", err));
+
+// Запуск сервера
+const PORT = process.env.PORT || 3002;
+app.listen(PORT, () => console.log(`✅ Сервер запущен на порту ${PORT}`));

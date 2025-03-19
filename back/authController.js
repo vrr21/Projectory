@@ -1,63 +1,66 @@
-const { OAuth2Client } = require('google-auth-library');
-const User = require('./models/User');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const { User } = require("../models");
 
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+// Функция регистрации пользователя
+exports.register = async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-class AuthController {
-  // Регистрация пользователя
-  async register(req, res) {
-    try {
-      const { email, password } = req.body;
-
-      // Проверка, существует ли пользователь с таким email
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ message: 'Email уже существует!' });
-      }
-
-      // Хеширование пароля и создание нового пользователя
-      const hashedPassword = bcrypt.hashSync(password, 7);
-      const newUser = new User({ email, password: hashedPassword });
-      await newUser.save();
-
-      // Генерация токена
-      const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-      res.status(201).json({ message: 'Пользователь успешно зарегистрирован!', token });
-    } catch (error) {
-      console.error('Ошибка при регистрации:', error);
-      res.status(500).json({ message: 'Ошибка сервера' });
+    // Проверка email
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: "Email должен быть формата @gmail.com" });
     }
-  }
 
-  // Авторизация пользователя
-  async login(req, res) {
-    try {
-      const { email, password } = req.body;
-
-      // Поиск пользователя по email
-      const user = await User.findOne({ email });
-      if (!user) {
-        return res.status(404).json({ message: 'Пользователь не найден' });
-      }
-
-      // Проверка пароля
-      const isPasswordValid = bcrypt.compareSync(password, user.password);
-      if (!isPasswordValid) {
-        return res.status(400).json({ message: 'Неверный пароль' });
-      }
-
-      // Генерация токена
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-      res.json({ token });
-    } catch (error) {
-      console.error('Ошибка при авторизации:', error);
-      res.status(500).json({ message: 'Ошибка сервера' });
+    // Проверяем, есть ли пользователь с таким email
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ error: "Этот email уже зарегистрирован" });
     }
-  }
-}
 
-module.exports = new AuthController();
+    // Хэшируем пароль
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Создаем нового пользователя
+    const newUser = await User.create({
+      email,
+      password: hashedPassword,
+    });
+
+    // Генерируем токен
+    const token = jwt.sign({ userId: newUser.id }, "SECRET_KEY", { expiresIn: "7d" });
+
+    return res.json({ token, message: "Регистрация успешна!" });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Ошибка регистрации" });
+  }
+};
+
+// Функция авторизации пользователя
+exports.login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Ищем пользователя по email
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(400).json({ error: "Неправильный email или пароль" });
+    }
+
+    // Проверяем пароль
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: "Неправильный email или пароль" });
+    }
+
+    // Генерируем токен
+    const token = jwt.sign({ userId: user.id }, "SECRET_KEY", { expiresIn: "7d" });
+
+    return res.json({ token, message: "Авторизация успешна!" });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Ошибка авторизации" });
+  }
+};
