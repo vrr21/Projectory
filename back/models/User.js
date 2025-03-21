@@ -12,7 +12,7 @@ module.exports = (sequelize) => {
       EmployeeID: {
         type: DataTypes.INTEGER,
         unique: true,
-        allowNull: true,
+        allowNull: false,
       },
       Username: {
         type: DataTypes.STRING(100),
