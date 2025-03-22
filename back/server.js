@@ -1,15 +1,19 @@
+// back/server.js
 const express = require("express");
 const mssql = require("mssql");
-const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const cors = require("cors");
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: "http://localhost:3000",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+}));
 
-// Проверка, что все переменные окружения загружены
 console.log("Проверка переменных окружения:");
 console.log("PORT:", process.env.PORT);
 console.log("DB_USER:", process.env.DB_USER);
@@ -19,16 +23,15 @@ console.log("DB_PORT:", process.env.DB_PORT);
 console.log("DB_NAME:", process.env.DB_NAME);
 console.log("JWT_SECRET:", process.env.JWT_SECRET);
 
-// Настройки подключения к базе данных из .env
 const dbConfig = {
-  user: process.env.DB_USER, // ProssLibrann
-  password: process.env.DB_PASSWORD, // 123456789
-  server: process.env.DB_HOST, // localhost
-  port: parseInt(process.env.DB_PORT), // 1433
-  database: process.env.DB_NAME, // KURSACHBD
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  server: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT),
+  database: process.env.DB_NAME,
   options: {
-    encrypt: true, // Для MSSQL рекомендуется включить шифрование
-    trustServerCertificate: true, // Для локального сервера
+    encrypt: true,
+    trustServerCertificate: true,
   },
 };
 
@@ -38,14 +41,13 @@ async function startDB() {
     await mssql.connect(dbConfig);
     console.log("База данных подключена");
   } catch (err) {
-    console.error("Ошибка подключения к БД:", err);
-    process.exit(1); // Завершаем процесс, если не удалось подключиться
+    console.error("Ошибка подключения к БД:", err.message, err.stack);
+    process.exit(1);
   }
 }
 
 startDB();
 
-// Middleware для проверки токена
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -66,68 +68,79 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Регистрация пользователя
 app.post("/api/auth/register", async (req, res) => {
-  const { email, password } = req.body;
+  console.log("Маршрут /api/auth/register вызван");
+  const { fullName, phone, email, password } = req.body;
 
-  console.log("Запрос на регистрацию:", req.body); // Логирование входящих данных
+  console.log("Запрос на регистрацию:", req.body);
 
-  if (!email || !password) {
-    console.log("Email или пароль не предоставлены");
-    return res.status(400).json({ error: "Email и пароль обязательны" });
+  if (!fullName || !phone || !email || !password) {
+    console.log("Не все поля предоставлены");
+    return res.status(400).json({ error: "Все поля обязательны" });
+  }
+
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+  if (!emailRegex.test(email)) {
+    console.log("Некорректный email:", email);
+    return res.status(400).json({ error: "Email должен быть формата @gmail.com" });
   }
 
   try {
+    console.log("Попытка подключения к базе данных...");
     const pool = await mssql.connect(dbConfig);
-    const checkUser = await pool
+    console.log("Подключение к базе данных успешно");
+
+    console.log(`Проверка email ${email} в базе данных...`);
+    const checkEmail = await pool
       .request()
       .input("email", mssql.NVarChar, email)
       .query("SELECT * FROM Users WHERE Email = @email");
 
-    if (checkUser.recordset.length > 0) {
+    console.log("Результат проверки email:", checkEmail.recordset);
+    if (checkEmail.recordset.length > 0) {
       console.log(`Пользователь с email ${email} уже существует`);
-      return res.status(400).json({ error: "Пользователь уже существует" });
+      return res.status(400).json({ error: "Этот email уже зарегистрирован" });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
-
+    console.log("Создание записи в таблице Employee...");
     const employeeResult = await pool
       .request()
-      .input("FullName", mssql.NVarChar, "Новый пользователь")
+      .input("FullName", mssql.NVarChar, fullName)
       .input("Email", mssql.NVarChar, email)
-      .input("Phone", mssql.NVarChar, null)
+      .input("Phone", mssql.NVarChar, phone)
       .input("PositionID", mssql.Int, null)
       .query(
         "INSERT INTO Employee (FullName, Email, Phone, PositionID) OUTPUT INSERTED.EmployeeID VALUES (@FullName, @Email, @Phone, @PositionID)"
       );
 
     const employeeId = employeeResult.recordset[0].EmployeeID;
+    console.log(`Сотрудник создан с ID: ${employeeId}`);
 
+    console.log("Создание записи в таблице Users...");
     await pool
       .request()
       .input("EmployeeID", mssql.Int, employeeId)
-      .input("Username", mssql.NVarChar, email.split("@")[0])
       .input("Email", mssql.NVarChar, email)
-      .input("PasswordHash", mssql.NVarChar, passwordHash)
+      .input("Password", mssql.NVarChar, password)
       .input("IsAdmin", mssql.Bit, 0)
       .input("Role", mssql.NVarChar, "Сотрудник")
       .query(
-        "INSERT INTO Users (EmployeeID, Username, Email, PasswordHash, IsAdmin, Role) VALUES (@EmployeeID, @Username, @Email, @PasswordHash, @IsAdmin, @Role)"
+        "INSERT INTO Users (EmployeeID, Email, Password, IsAdmin, Role) VALUES (@EmployeeID, @Email, @Password, @IsAdmin, @Role)"
       );
 
     console.log(`Пользователь с email ${email} успешно зарегистрирован`);
     res.status(201).json({ message: "Регистрация успешна" });
   } catch (err) {
-    console.error("Ошибка при регистрации:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+    console.error("Ошибка при регистрации:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
   }
 });
 
-// Авторизация пользователя
 app.post("/api/auth/login", async (req, res) => {
+  console.log("Маршрут /api/auth/login вызван");
   const { email, password } = req.body;
 
-  console.log("Запрос на авторизацию:", req.body); // Логирование входящих данных
+  console.log("Запрос на авторизацию:", req.body);
 
   if (!email || !password) {
     console.log("Email или пароль не предоставлены");
@@ -147,9 +160,7 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const user = userResult.recordset[0];
-    const isPasswordValid = await bcrypt.compare(password, user.PasswordHash);
-
-    if (!isPasswordValid) {
+    if (user.Password !== password) {
       console.log(`Неверный пароль для email ${email}`);
       return res.status(400).json({ error: "Неверный пароль" });
     }
@@ -161,160 +172,135 @@ app.post("/api/auth/login", async (req, res) => {
     );
 
     console.log(`Токен сгенерирован для email ${email}: ${token}`);
-    res.json({ token });
+    res.json({ token, role: user.Role }); // Добавляем роль в ответ
   } catch (err) {
-    console.error("Ошибка авторизации:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+    console.error("Ошибка авторизации:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
   }
 });
 
-// Проверка валидности токена
 app.get("/api/auth/verify-token", authenticateToken, async (req, res) => {
   console.log("Маршрут /api/auth/verify-token вызван");
   try {
     console.log("Токен успешно проверен");
-    res.json({ message: "Токен действителен" });
+    res.json({ message: "Токен действителен", role: req.user.role, employeeId: req.user.employeeId });
   } catch (err) {
-    console.error("Ошибка проверки токена:", err);
-    res.status(401).json({ error: "Недействительный токен" });
+    console.error("Ошибка проверки токена:", err.message, err.stack);
+    res.status(401).json({ error: "Недействительный токен", details: err.message });
   }
 });
 
-// Получение задач пользователя
 app.get("/api/tasks", authenticateToken, async (req, res) => {
   const employeeId = req.user.employeeId;
+  const { employeeId: queryEmployeeId } = req.query;
 
   try {
     const pool = await mssql.connect(dbConfig);
-    const tasks = await pool
-      .request()
-      .input("employeeId", mssql.Int, employeeId)
-      .query(
-        `SELECT te.TaskExecutionID AS id, co.Description AS title, s.Name AS status, 
-         te.ExecutionDate AS deadline, te.HoursSpent AS hoursSpent, tt.Name AS type
-         FROM TaskExecution te
-         JOIN CustomerOrder co ON te.OrderID = co.OrderID
-         JOIN Status s ON te.StatusID = s.StatusID
-         JOIN Stage st ON te.StageID = st.StageID
-         JOIN TaskType tt ON st.TaskTypeID = tt.TaskTypeID
-         WHERE te.EmployeeID = @employeeId`
-      );
+    let tasks;
 
-    console.log(`Задачи для сотрудника ${employeeId} успешно получены`);
+    if (req.user.role === "Администратор" && queryEmployeeId) {
+      tasks = await pool
+        .request()
+        .input("employeeId", mssql.Int, queryEmployeeId)
+        .query(
+          `SELECT te.TaskExecutionID AS TaskID, co.Description AS Title, s.Name AS Status, 
+                  te.ExecutionDate AS DueDate, te.HoursSpent AS hoursSpent, st.Name AS Description
+           FROM TaskExecution te
+           JOIN CustomerOrder co ON te.OrderID = co.OrderID
+           JOIN Status s ON te.StatusID = s.StatusID
+           JOIN Stage st ON te.StageID = st.StageID
+           WHERE te.EmployeeID = @employeeId`
+        );
+    } else {
+      tasks = await pool
+        .request()
+        .input("employeeId", mssql.Int, employeeId)
+        .query(
+          `SELECT te.TaskExecutionID AS TaskID, co.Description AS Title, s.Name AS Status, 
+                  te.ExecutionDate AS DueDate, te.HoursSpent AS hoursSpent, st.Name AS Description
+           FROM TaskExecution te
+           JOIN CustomerOrder co ON te.OrderID = co.OrderID
+           JOIN Status s ON te.StatusID = s.StatusID
+           JOIN Stage st ON te.StageID = st.StageID
+           WHERE te.EmployeeID = @employeeId`
+        );
+    }
+
+    console.log(`Задачи для сотрудника ${employeeId} успешно получены:`, tasks.recordset);
     res.json(tasks.recordset);
   } catch (err) {
-    console.error("Ошибка получения задач:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+    console.error("Ошибка получения задач:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
   }
 });
 
-// Добавление задачи
 app.post("/api/tasks", authenticateToken, async (req, res) => {
-  const { title, type, deadline } = req.body;
-  const employeeId = req.user.employeeId;
+  const { title, description, dueDate, employeeId, stageId, statusId, executionDate, hoursSpent } = req.body;
 
-  if (!title || !type || !deadline) {
-    console.log("Не все поля предоставлены для добавления задачи");
+  if (!title || !description || !dueDate || !employeeId || !stageId || !statusId || !executionDate) {
+    console.log("Не все поля предоставлены для добавления задачи:", req.body);
     return res.status(400).json({ error: "Заполните все поля" });
   }
 
   try {
     const pool = await mssql.connect(dbConfig);
 
-    // Получаем TaskTypeID
-    const taskTypeResult = await pool
-      .request()
-      .input("type", mssql.NVarChar, type)
-      .query("SELECT TaskTypeID FROM TaskType WHERE Name = @type");
-
-    if (taskTypeResult.recordset.length === 0) {
-      console.log(`Тип задачи "${type}" не найден`);
-      return res.status(400).json({ error: "Неверный тип задачи" });
-    }
-    const taskTypeId = taskTypeResult.recordset[0].TaskTypeID;
-
-    // Создаем новый заказ
-    const customerId = 1; // Предположим, у нас есть тестовый клиент
     const orderResult = await pool
       .request()
-      .input("CustomerID", mssql.Int, customerId)
+      .input("CustomerID", mssql.Int, 1)
       .input("Description", mssql.NVarChar, title)
       .input("OrderDate", mssql.Date, new Date())
-      .input("DueDate", mssql.Date, deadline)
-      .input("OrderTypeID", mssql.Int, 1) // Стандартный заказ
-      .input("StatusID", mssql.Int, 1) // "В работе"
+      .input("DueDate", mssql.Date, dueDate)
+      .input("OrderTypeID", mssql.Int, 1)
+      .input("StatusID", mssql.Int, 1)
       .query(
         "INSERT INTO CustomerOrder (CustomerID, Description, OrderDate, DueDate, OrderTypeID, StatusID) OUTPUT INSERTED.OrderID VALUES (@CustomerID, @Description, @OrderDate, @DueDate, @OrderTypeID, @StatusID)"
       );
 
     const orderId = orderResult.recordset[0].OrderID;
 
-    // Создаем этап
-    const stageResult = await pool
-      .request()
-      .input("Name", mssql.NVarChar, `Этап для ${title}`)
-      .input("Deadline", mssql.Date, deadline)
-      .input("TaskTypeID", mssql.Int, taskTypeId)
-      .query(
-        "INSERT INTO Stage (Name, Deadline, TaskTypeID) OUTPUT INSERTED.StageID VALUES (@Name, @Deadline, @TaskTypeID)"
-      );
-
-    const stageId = stageResult.recordset[0].StageID;
-
-    // Создаем задачу
-    await pool
+    const taskResult = await pool
       .request()
       .input("OrderID", mssql.Int, orderId)
       .input("EmployeeID", mssql.Int, employeeId)
       .input("StageID", mssql.Int, stageId)
-      .input("ExecutionDate", mssql.Date, new Date())
-      .input("HoursSpent", mssql.Int, 0)
-      .input("StatusID", mssql.Int, 1) // "В работе"
+      .input("ExecutionDate", mssql.Date, executionDate)
+      .input("HoursSpent", mssql.Int, hoursSpent || 0)
+      .input("StatusID", mssql.Int, statusId)
       .query(
-        "INSERT INTO TaskExecution (OrderID, EmployeeID, StageID, ExecutionDate, HoursSpent, StatusID) VALUES (@OrderID, @EmployeeID, @StageID, @ExecutionDate, @HoursSpent, @StatusID)"
-      );
-
-    // Добавляем назначение задачи
-    await pool
-      .request()
-      .input("TaskTypeID", mssql.Int, taskTypeId)
-      .input("EmployeeID", mssql.Int, employeeId)
-      .query(
-        "INSERT INTO TaskAssignment (TaskTypeID, EmployeeID) VALUES (@TaskTypeID, @EmployeeID)"
+        "INSERT INTO TaskExecution (OrderID, EmployeeID, StageID, ExecutionDate, HoursSpent, StatusID) OUTPUT INSERTED.TaskExecutionID VALUES (@OrderID, @EmployeeID, @StageID, @ExecutionDate, @HoursSpent, @StatusID)"
       );
 
     console.log(`Задача "${title}" успешно добавлена для сотрудника ${employeeId}`);
-    res.status(201).json({ message: "Задача добавлена" });
+    res.status(201).json({ TaskID: taskResult.recordset[0].TaskExecutionID });
   } catch (err) {
-    console.error("Ошибка добавления задачи:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+    console.error("Ошибка добавления задачи:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
   }
 });
 
-// Обновление статуса задачи
 app.put("/api/tasks/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { status, hoursSpent } = req.body;
-  const employeeId = req.user.employeeId;
+  const { status, hoursSpent, employeeId } = req.body;
+
+  if (!status || hoursSpent === undefined) {
+    console.log("Не все поля предоставлены для обновления задачи:", req.body);
+    return res.status(400).json({ error: "Статус и часы работы обязательны" });
+  }
 
   try {
     const pool = await mssql.connect(dbConfig);
 
-    // Проверяем, что задача принадлежит сотруднику
     const taskCheck = await pool
       .request()
       .input("TaskExecutionID", mssql.Int, id)
-      .input("EmployeeID", mssql.Int, employeeId)
-      .query(
-        "SELECT * FROM TaskExecution WHERE TaskExecutionID = @TaskExecutionID AND EmployeeID = @EmployeeID"
-      );
+      .query("SELECT * FROM TaskExecution WHERE TaskExecutionID = @TaskExecutionID");
 
     if (taskCheck.recordset.length === 0) {
-      console.log(`Сотрудник ${employeeId} не имеет доступа к задаче ${id}`);
-      return res.status(403).json({ error: "Доступ запрещен" });
+      console.log(`Задача ${id} не найдена`);
+      return res.status(404).json({ error: "Задача не найдена" });
     }
 
-    // Получаем StatusID
     const statusResult = await pool
       .request()
       .input("Name", mssql.NVarChar, status)
@@ -326,31 +312,251 @@ app.put("/api/tasks/:id", authenticateToken, async (req, res) => {
     }
     const statusId = statusResult.recordset[0].StatusID;
 
-    // Обновляем задачу
     await pool
       .request()
       .input("TaskExecutionID", mssql.Int, id)
       .input("StatusID", mssql.Int, statusId)
       .input("HoursSpent", mssql.Int, hoursSpent)
+      .input("EmployeeID", mssql.Int, employeeId || taskCheck.recordset[0].EmployeeID)
       .query(
-        "UPDATE TaskExecution SET StatusID = @StatusID, HoursSpent = @HoursSpent WHERE TaskExecutionID = @TaskExecutionID"
+        "UPDATE TaskExecution SET StatusID = @StatusID, HoursSpent = @HoursSpent, EmployeeID = @EmployeeID WHERE TaskExecutionID = @TaskExecutionID"
       );
 
-    console.log(`Задача ${id} обновлена для сотрудника ${employeeId}`);
+    console.log(`Задача ${id} обновлена`);
     res.json({ message: "Задача обновлена" });
   } catch (err) {
-    console.error("Ошибка обновления задачи:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+    console.error("Ошибка обновления задачи:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
   }
 });
 
-// Тестовый маршрут для проверки работы сервера
+app.delete("/api/tasks/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const pool = await mssql.connect(dbConfig);
+
+    const taskCheck = await pool
+      .request()
+      .input("TaskExecutionID", mssql.Int, id)
+      .query("SELECT * FROM TaskExecution WHERE TaskExecutionID = @TaskExecutionID");
+
+    if (taskCheck.recordset.length === 0) {
+      console.log(`Задача ${id} не найдена`);
+      return res.status(404).json({ error: "Задача не найдена" });
+    }
+
+    await pool
+      .request()
+      .input("TaskExecutionID", mssql.Int, id)
+      .query("DELETE FROM TaskExecution WHERE TaskExecutionID = @TaskExecutionID");
+
+    console.log(`Задача ${id} удалена`);
+    res.json({ message: "Задача удалена" });
+  } catch (err) {
+    console.error("Ошибка удаления задачи:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/employees", authenticateToken, async (req, res) => {
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const employees = await pool
+      .request()
+      .query(
+        `SELECT e.EmployeeID, e.FullName, e.Email, e.Phone, p.Name AS Position
+         FROM Employee e
+         LEFT JOIN Position p ON e.PositionID = p.PositionID`
+      );
+
+    console.log("Список сотрудников успешно получен");
+    res.json(employees.recordset);
+  } catch (err) {
+    console.error("Ошибка получения списка сотрудников:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/employees/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const employee = await pool
+      .request()
+      .input("EmployeeID", mssql.Int, id)
+      .query(
+        `SELECT e.EmployeeID, e.FullName, e.Email, e.Phone, p.Name AS Position
+         FROM Employee e
+         LEFT JOIN Position p ON e.PositionID = p.PositionID
+         WHERE e.EmployeeID = @EmployeeID`
+      );
+
+    if (employee.recordset.length === 0) {
+      console.log(`Сотрудник ${id} не найден`);
+      return res.status(404).json({ error: "Сотрудник не найден" });
+    }
+
+    console.log(`Данные сотрудника ${id} успешно получены`);
+    res.json(employee.recordset[0]);
+  } catch (err) {
+    console.error("Ошибка получения сотрудника:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/users/:employeeId", authenticateToken, async (req, res) => {
+  const { employeeId } = req.params;
+
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const user = await pool
+      .request()
+      .input("EmployeeID", mssql.Int, employeeId)
+      .query("SELECT * FROM Users WHERE EmployeeID = @EmployeeID");
+
+    if (user.recordset.length === 0) {
+      console.log(`Пользователь с employeeId ${employeeId} не найден`);
+      return res.status(404).json({ error: "Пользователь не найден" });
+    }
+
+    console.log(`Данные пользователя с employeeId ${employeeId} успешно получены`);
+    res.json(user.recordset[0]);
+  } catch (err) {
+    console.error("Ошибка получения пользователя:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/stages", authenticateToken, async (req, res) => {
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const stages = await pool
+      .request()
+      .query("SELECT StageID, Name FROM Stage");
+
+    console.log("Список этапов успешно получен");
+    res.json(stages.recordset);
+  } catch (err) {
+    console.error("Ошибка получения этапов:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/statuses", authenticateToken, async (req, res) => {
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const statuses = await pool
+      .request()
+      .query("SELECT StatusID, Name FROM Status");
+
+    console.log("Список статусов успешно получен");
+    res.json(statuses.recordset);
+  } catch (err) {
+    console.error("Ошибка получения статусов:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/orders", authenticateToken, async (req, res) => {
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const orders = await pool
+      .request()
+      .query(
+        `SELECT co.OrderID, co.Description, co.OrderDate, co.DueDate, 
+                c.Name AS Customer, ot.Name AS OrderType, s.Name AS Status
+         FROM CustomerOrder co
+         JOIN Customer c ON co.CustomerID = c.CustomerID
+         JOIN OrderType ot ON co.OrderTypeID = ot.OrderTypeID
+         JOIN Status s ON co.StatusID = s.StatusID`
+      );
+
+    console.log("Журнал заявок успешно получен");
+    res.json(orders.recordset);
+  } catch (err) {
+    console.error("Ошибка получения журнала заявок:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/reports/employee-tasks/:employeeId", authenticateToken, async (req, res) => {
+  const { employeeId } = req.params;
+
+  if (req.user.role !== "Администратор" && req.user.employeeId != employeeId) {
+    console.log(`Пользователь ${req.user.userId} не имеет доступа к отчетам сотрудника ${employeeId}`);
+    return res.status(403).json({ error: "Доступ запрещен" });
+  }
+
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const report = await pool
+      .request()
+      .input("employeeId", mssql.Int, employeeId)
+      .query(
+        `SELECT e.FullName, te.TaskExecutionID, co.Description AS TaskTitle, s.Name AS Status, te.HoursSpent
+         FROM TaskExecution te
+         JOIN Employee e ON te.EmployeeID = e.EmployeeID
+         JOIN CustomerOrder co ON te.OrderID = co.OrderID
+         JOIN Status s ON te.StatusID = s.StatusID
+         WHERE te.EmployeeID = @employeeId`
+      );
+
+    console.log(`Отчет по задачам для сотрудника ${employeeId} успешно получен`);
+    res.json(report.recordset);
+  } catch (err) {
+    console.error("Ошибка получения отчета по задачам сотрудника:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
+app.get("/api/reports/employee-tasks-period/:employeeId", authenticateToken, async (req, res) => {
+  const { employeeId } = req.params;
+  const { startDate, endDate } = req.query;
+
+  if (req.user.role !== "Администратор" && req.user.employeeId != employeeId) {
+    console.log(`Пользователь ${req.user.userId} не имеет доступа к отчетам сотрудника ${employeeId}`);
+    return res.status(403).json({ error: "Доступ запрещен" });
+  }
+
+  if (!startDate || !endDate) {
+    console.log("Не указаны даты для отчета:", req.query);
+    return res.status(400).json({ error: "Укажите даты начала и окончания периода" });
+  }
+
+  try {
+    const pool = await mssql.connect(dbConfig);
+    const report = await pool
+      .request()
+      .input("employeeId", mssql.Int, employeeId)
+      .input("startDate", mssql.Date, startDate)
+      .input("endDate", mssql.Date, endDate)
+      .query(
+        `SELECT te.EmployeeID, e.FullName, te.ExecutionDate, s.Name AS Stage, 
+                co.Description AS OrderDescription, te.HoursSpent
+         FROM TaskExecution te
+         JOIN Employee e ON te.EmployeeID = e.EmployeeID
+         JOIN Stage s ON te.StageID = s.StageID
+         JOIN CustomerOrder co ON te.OrderID = co.OrderID
+         WHERE te.EmployeeID = @employeeId
+         AND te.ExecutionDate BETWEEN @startDate AND @endDate
+         ORDER BY te.ExecutionDate`
+      );
+
+    console.log(`Отчет по задачам за период для сотрудника ${employeeId} успешно получен`);
+    res.json(report.recordset);
+  } catch (err) {
+    console.error("Ошибка получения отчета по задачам за период:", err.message, err.stack);
+    res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
+  }
+});
+
 app.get("/api/test", (req, res) => {
   console.log("Тестовый маршрут вызван");
   res.json({ message: "Сервер работает" });
 });
 
-// Запуск сервера на порту из .env
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
