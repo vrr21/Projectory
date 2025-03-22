@@ -2,8 +2,9 @@
 const express = require("express");
 const mssql = require("mssql");
 const jwt = require("jsonwebtoken");
-require("dotenv").config();
+const bcrypt = require("bcryptjs");
 const cors = require("cors");
+require("dotenv").config();
 
 const app = express();
 app.use(express.json());
@@ -14,6 +15,7 @@ app.use(cors({
   credentials: true,
 }));
 
+// Логирование переменных окружения
 console.log("Проверка переменных окружения:");
 console.log("PORT:", process.env.PORT);
 console.log("DB_USER:", process.env.DB_USER);
@@ -23,6 +25,7 @@ console.log("DB_PORT:", process.env.DB_PORT);
 console.log("DB_NAME:", process.env.DB_NAME);
 console.log("JWT_SECRET:", process.env.JWT_SECRET);
 
+// Настройка подключения к базе данных
 const dbConfig = {
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
@@ -48,6 +51,7 @@ async function startDB() {
 
 startDB();
 
+// Middleware для проверки токена
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -68,6 +72,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Регистрация пользователя
 app.post("/api/auth/register", async (req, res) => {
   console.log("Маршрут /api/auth/register вызван");
   const { fullName, phone, email, password } = req.body;
@@ -85,8 +90,13 @@ app.post("/api/auth/register", async (req, res) => {
     return res.status(400).json({ error: "Email должен быть формата @gmail.com" });
   }
 
+  const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/;
+  if (!passwordRegex.test(password)) {
+    console.log("Некорректный пароль:", password);
+    return res.status(400).json({ error: "Пароль должен содержать минимум 8 символов, включая буквы и цифры" });
+  }
+
   try {
-    console.log("Попытка подключения к базе данных...");
     const pool = await mssql.connect(dbConfig);
     console.log("Подключение к базе данных успешно");
 
@@ -96,11 +106,15 @@ app.post("/api/auth/register", async (req, res) => {
       .input("email", mssql.NVarChar, email)
       .query("SELECT * FROM Users WHERE Email = @email");
 
-    console.log("Результат проверки email:", checkEmail.recordset);
     if (checkEmail.recordset.length > 0) {
       console.log(`Пользователь с email ${email} уже существует`);
       return res.status(400).json({ error: "Этот email уже зарегистрирован" });
     }
+
+    // Хешируем пароль
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    console.log("Пароль успешно хеширован");
 
     console.log("Создание записи в таблице Employee...");
     const employeeResult = await pool
@@ -121,7 +135,7 @@ app.post("/api/auth/register", async (req, res) => {
       .request()
       .input("EmployeeID", mssql.Int, employeeId)
       .input("Email", mssql.NVarChar, email)
-      .input("Password", mssql.NVarChar, password)
+      .input("Password", mssql.NVarChar, hashedPassword)
       .input("IsAdmin", mssql.Bit, 0)
       .input("Role", mssql.NVarChar, "Сотрудник")
       .query(
@@ -136,19 +150,24 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
+// Авторизация пользователя
 app.post("/api/auth/login", async (req, res) => {
   console.log("Маршрут /api/auth/login вызван");
   const { email, password } = req.body;
 
-  console.log("Запрос на авторизацию:", req.body);
+  console.log("Полученные данные для авторизации:", { email, password });
 
+  // Проверка наличия email и пароля
   if (!email || !password) {
-    console.log("Email или пароль не предоставлены");
+    console.log("Email или пароль не предоставлены:", { email, password });
     return res.status(400).json({ error: "Email и пароль обязательны" });
   }
 
   try {
     const pool = await mssql.connect(dbConfig);
+    console.log("Подключение к базе данных успешно");
+
+    // Поиск пользователя по email
     const userResult = await pool
       .request()
       .input("email", mssql.NVarChar, email)
@@ -156,29 +175,35 @@ app.post("/api/auth/login", async (req, res) => {
 
     if (userResult.recordset.length === 0) {
       console.log(`Пользователь с email ${email} не найден`);
-      return res.status(400).json({ error: "Пользователь не найден" });
+      return res.status(400).json({ error: "Неверный email или пароль" });
     }
 
     const user = userResult.recordset[0];
-    if (user.Password !== password) {
-      console.log(`Неверный пароль для email ${email}`);
-      return res.status(400).json({ error: "Неверный пароль" });
+    console.log("Найден пользователь:", user);
+
+    // Проверка пароля
+    const isMatch = await bcrypt.compare(password, user.Password);
+    if (!isMatch) {
+      console.log(`Неверный пароль для email ${email}. Введённый пароль: ${password}, хешированный пароль в БД: ${user.Password}`);
+      return res.status(400).json({ error: "Неверный email или пароль" });
     }
 
+    // Генерация токена
     const token = jwt.sign(
       { userId: user.UserID, employeeId: user.EmployeeID, role: user.Role },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
 
-    console.log(`Токен сгенерирован для email ${email}: ${token}`);
-    res.json({ token, role: user.Role }); // Добавляем роль в ответ
+    console.log(`Авторизация успешна для email ${email}. Сгенерирован токен: ${token}`);
+    res.json({ token, role: user.Role });
   } catch (err) {
     console.error("Ошибка авторизации:", err.message, err.stack);
     res.status(500).json({ error: "Внутренняя ошибка сервера", details: err.message });
   }
 });
 
+// Проверка токена
 app.get("/api/auth/verify-token", authenticateToken, async (req, res) => {
   console.log("Маршрут /api/auth/verify-token вызван");
   try {
@@ -190,6 +215,7 @@ app.get("/api/auth/verify-token", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение задач
 app.get("/api/tasks", authenticateToken, async (req, res) => {
   const employeeId = req.user.employeeId;
   const { employeeId: queryEmployeeId } = req.query;
@@ -234,6 +260,7 @@ app.get("/api/tasks", authenticateToken, async (req, res) => {
   }
 });
 
+// Добавление задачи
 app.post("/api/tasks", authenticateToken, async (req, res) => {
   const { title, description, dueDate, employeeId, stageId, statusId, executionDate, hoursSpent } = req.body;
 
@@ -279,6 +306,7 @@ app.post("/api/tasks", authenticateToken, async (req, res) => {
   }
 });
 
+// Обновление задачи
 app.put("/api/tasks/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { status, hoursSpent, employeeId } = req.body;
@@ -330,6 +358,7 @@ app.put("/api/tasks/:id", authenticateToken, async (req, res) => {
   }
 });
 
+// Удаление задачи
 app.delete("/api/tasks/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
 
@@ -359,6 +388,7 @@ app.delete("/api/tasks/:id", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение списка сотрудников
 app.get("/api/employees", authenticateToken, async (req, res) => {
   try {
     const pool = await mssql.connect(dbConfig);
@@ -378,6 +408,7 @@ app.get("/api/employees", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение данных сотрудника
 app.get("/api/employees/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
 
@@ -406,6 +437,7 @@ app.get("/api/employees/:id", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение данных пользователя
 app.get("/api/users/:employeeId", authenticateToken, async (req, res) => {
   const { employeeId } = req.params;
 
@@ -429,6 +461,7 @@ app.get("/api/users/:employeeId", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение этапов
 app.get("/api/stages", authenticateToken, async (req, res) => {
   try {
     const pool = await mssql.connect(dbConfig);
@@ -444,6 +477,7 @@ app.get("/api/stages", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение статусов
 app.get("/api/statuses", authenticateToken, async (req, res) => {
   try {
     const pool = await mssql.connect(dbConfig);
@@ -459,6 +493,7 @@ app.get("/api/statuses", authenticateToken, async (req, res) => {
   }
 });
 
+// Получение журнала заявок
 app.get("/api/orders", authenticateToken, async (req, res) => {
   try {
     const pool = await mssql.connect(dbConfig);
@@ -481,6 +516,7 @@ app.get("/api/orders", authenticateToken, async (req, res) => {
   }
 });
 
+// Отчёт по задачам сотрудника
 app.get("/api/reports/employee-tasks/:employeeId", authenticateToken, async (req, res) => {
   const { employeeId } = req.params;
 
@@ -511,6 +547,7 @@ app.get("/api/reports/employee-tasks/:employeeId", authenticateToken, async (req
   }
 });
 
+// Отчёт по задачам за период
 app.get("/api/reports/employee-tasks-period/:employeeId", authenticateToken, async (req, res) => {
   const { employeeId } = req.params;
   const { startDate, endDate } = req.query;
@@ -552,6 +589,7 @@ app.get("/api/reports/employee-tasks-period/:employeeId", authenticateToken, asy
   }
 });
 
+// Тестовый маршрут
 app.get("/api/test", (req, res) => {
   console.log("Тестовый маршрут вызван");
   res.json({ message: "Сервер работает" });
